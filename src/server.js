@@ -19,64 +19,57 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Routes
-app.use('/api', routes);
-
 // Default route
 app.get('/', (req, res) => {
-  res.send('Welcome to the API');
+  res.send('Welcome to the API - Server is running!');
 });
+
+// Health check route that doesn't require database
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    message: 'Server is running', 
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Apply routes only if database connection succeeds
+let dbConnected = false;
+
+// Routes
+app.use('/api', (req, res, next) => {
+  if (!dbConnected && req.path !== '/health') {
+    return res.status(503).json({ 
+      error: 'Database connection not established', 
+      message: 'The API is starting up or the database is unavailable'
+    });
+  }
+  next();
+}, routes);
 
 // Sync database and start server
 const startServer = async () => {
+  // Start server first, regardless of database status
+  const server = app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+  
   try {
     // Test database connection
     await testConnection();
     
-    // Sync database models WITHOUT force:true to preserve data
-    console.log('Syncing database...');
-    // Use alter:true but with a try-catch to handle validation errors
+    // Try to sync database models
     try {
-      // First try altering the tables
-      await sequelize.sync({ alter: true });
-      console.log('Database tables synced successfully with alter:true');
-    } catch (alterError) {
-      console.error('Error with alter sync:', alterError.message);
-      
-      // If altering fails, try syncing without altering
-      try {
-        console.log('Trying to sync without altering tables...');
-        await sequelize.sync();
-        console.log('Database tables synced successfully');
-      } catch (syncError) {
-        console.error('Failed to sync database:', syncError.message);
-        process.exit(1);
-      }
-    }
-    
-    // Start server
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error.message);
-    if (error.parent) {
-      console.error('Database error:', error.parent.message);
-    }
-    
-    try {
-      console.log('Trying to sync without altering tables...');
-      await sequelize.sync();
+      await sequelize.sync({ alter: false });
       console.log('Database tables synced successfully');
-      
-      app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
-      });
+      dbConnected = true;
     } catch (syncError) {
       console.error('Failed to sync database:', syncError.message);
-      process.exit(1);
     }
+  } catch (error) {
+    console.error('Failed to connect to database:', error.message);
+    console.log('Server will continue running with limited functionality');
   }
 };
 
-startServer(); 
+startServer();
